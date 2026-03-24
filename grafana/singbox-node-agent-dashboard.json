@@ -1,0 +1,58 @@
+{
+  "title": "Sing-box Node Agent - Handshake Detailed",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 3,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active Nodes",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "node_source_active_nodes", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Probe Success / Failure Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 0},
+      "targets": [
+        {"expr": "sum(rate(node_probe_total{status='success'}[5m]))", "refId": "A"},
+        {"expr": "sum(rate(node_probe_total{status='failed'}[5m]))", "refId": "B"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "P95 Request Duration",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, node_id) (rate(node_probe_duration_seconds_bucket{phase='request'}[10m])))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Failures by Phase (15m)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "sum by (phase) (increase(node_probe_total{status='failed'}[15m]))", "refId": "A"}
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Handshake Failure Types (15m)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "sum by (error_type) (increase(node_probe_total{status='failed',phase=~'tls_clienthello|reality_verify'}[15m]))", "refId": "A"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reality / TLS Failures Over Time",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "sum by (error_type) (rate(node_probe_total{status='failed',phase=~'tls_clienthello|reality_verify'}[5m]))", "refId": "A"}
+      ]
+    }
+  ]
+}

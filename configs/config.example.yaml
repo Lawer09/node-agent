@@ -1,0 +1,37 @@
+listen_addr: ":2112"
+metrics_path: "/metrics"
+singbox_path: "/usr/local/bin/sing-box"
+max_workers: 10
+tick_seconds: 1
+
+default_probe:
+  interval_seconds: 60
+  timeout_seconds: 8
+  probe_url: "https://cp.cloudflare.com/generate_204"
+  utls_fingerprint: "chrome"
+
+subscription:
+  enabled: true
+  url: "suburl"
+  reload_seconds: 300
+  node_id_prefix: ""
+  override_probe_url: ""
+  headers:
+    User-Agent: "node-agent/1.0"
+  include_schemes:
+    - "vless"
+
+#nodes:
+#  - node_id: "static-ru-entry-01"
+#    name: "RU static"
+#    source: "static"
+#    server: "1.2.3.4"
+#    server_port: 443
+#    uuid: "11111111-1111-1111-1111-111111111111"
+#    server_name: "www.apple.com"
+#    public_key: "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0"
+#    short_id: "01234567"
+#    probe_url: "https://cp.cloudflare.com/generate_204"
+#    interval_seconds: 60
+#    timeout_seconds: 8
+#    utls_fingerprint: "chrome"

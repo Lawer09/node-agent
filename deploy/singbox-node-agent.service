@@ -1,0 +1,14 @@
+[Unit]
+Description=Sing-box Node Agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/singbox-node-agent
+Environment=CONFIG_PATH=/opt/singbox-node-agent/config.yaml
+ExecStart=/opt/singbox-node-agent/node-agent
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

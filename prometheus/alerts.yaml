@@ -1,0 +1,29 @@
+groups:
+  - name: singbox-node-agent
+    rules:
+      - alert: SingboxNodeProbeFailed
+        expr: increase(node_probe_total{status="failed"}[5m]) >= 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node probe failures detected"
+          description: "Node {{ $labels.node_id }} has failed probes in the last 5 minutes. phase={{ $labels.phase }} error={{ $labels.error_type }}"
+
+      - alert: SingboxNodeNoRecentSuccess
+        expr: time() - node_probe_last_success_timestamp_seconds > 600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node has not succeeded recently"
+          description: "Node {{ $labels.node_id }} has not had a successful probe in over 10 minutes."
+
+      - alert: SingboxHandshakeFailuresHigh
+        expr: increase(node_probe_total{status="failed",phase=~"tls_clienthello|reality_verify"}[10m]) >= 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Handshake failures are elevated"
+          description: "Node {{ $labels.node_id }} has repeated handshake failures. phase={{ $labels.phase }} error={{ $labels.error_type }}"
