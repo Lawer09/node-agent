@@ -49,6 +49,13 @@ func Run() error {
 	src := source.NewManager(cfg)
 	go src.Start(ctx)
 
+	subNodes, err := source.LoadFromURL(cfg.Subscription, cfg.DefaultProbe)
+	if err != nil {
+		log.Printf("load subscription failed: %v", err)
+	} else {
+		cfg.Nodes = append(cfg.Nodes, subNodes...)
+	}
+
 	s := scheduler.New(cfg, src)
 	log.Printf("scheduler started: %s", s.Summary())
 	go s.Start(ctx)

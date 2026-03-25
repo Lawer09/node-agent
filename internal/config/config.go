@@ -4,37 +4,59 @@ import (
 	"fmt"
 	"os"
 
-	"singbox-node-agent/internal/model"
-
 	"gopkg.in/yaml.v3"
+	"singbox-node-agent/internal/model"
 )
 
 type Config struct {
 	ListenAddr   string             `yaml:"listen_addr"`
 	MetricsPath  string             `yaml:"metrics_path"`
 	SingBoxPath  string             `yaml:"singbox_path"`
-	MaxWorkers   int                `yaml:"max_workers"`
-	TickSeconds  int                `yaml:"tick_seconds"`
+	Scheduler    SchedulerConfig    `yaml:"scheduler"`
 	DefaultProbe DefaultProbeConfig `yaml:"default_probe"`
 	Subscription SubscriptionConfig `yaml:"subscription"`
+	ProbeAgent   ProbeAgentConfig   `yaml:"probe_agent"`
 	Nodes        []model.NodeConfig `yaml:"nodes"`
 }
 
+type SchedulerConfig struct {
+	MaxWorkers         int `yaml:"max_workers"`
+	ReloadEverySeconds int `yaml:"reload_every_seconds"`
+	FailThreshold      int `yaml:"fail_threshold"`
+	RecoverThreshold   int `yaml:"recover_threshold"`
+}
+
 type DefaultProbeConfig struct {
-	IntervalSeconds int    `yaml:"interval_seconds"`
-	TimeoutSeconds  int    `yaml:"timeout_seconds"`
-	ProbeURL        string `yaml:"probe_url"`
-	UTLSFingerprint string `yaml:"utls_fingerprint"`
+	IntervalSeconds int          `yaml:"interval_seconds"`
+	TimeoutSeconds  int          `yaml:"timeout_seconds"`
+	ProbeMode       string       `yaml:"probe_mode"`
+	ProbeTargets    ProbeTargets `yaml:"probe_targets"`
+	UTLSFingerprint string       `yaml:"utls_fingerprint"`
+}
+
+type ProbeTargets struct {
+	Standard []string `yaml:"standard"`
+	Business []string `yaml:"business"`
 }
 
 type SubscriptionConfig struct {
-	URL              string            `yaml:"url"`
-	ReloadSeconds    int               `yaml:"reload_seconds"`
-	Headers          map[string]string `yaml:"headers"`
-	Enabled          bool              `yaml:"enabled"`
-	IncludeSchemes   []string          `yaml:"include_schemes"`
-	NodeIDPrefix     string            `yaml:"node_id_prefix"`
-	OverrideProbeURL string            `yaml:"override_probe_url"`
+	Enabled                bool     `yaml:"enabled"`
+	URL                    string   `yaml:"url"`
+	RefreshIntervalSeconds int      `yaml:"refresh_interval_seconds"`
+	EnableBase64Decode     bool     `yaml:"enable_base64_decode"`
+	IncludeProtocols       []string `yaml:"include_protocols"`
+	RealityOnly            bool     `yaml:"reality_only"`
+}
+
+type ProbeAgentConfig struct {
+	Name     string `yaml:"name"`
+	Region   string `yaml:"region"`
+	Country  string `yaml:"country"`
+	City     string `yaml:"city"`
+	Provider string `yaml:"provider"`
+	ASN      string `yaml:"asn"`
+	Env      string `yaml:"env"`
+	Cluster  string `yaml:"cluster"`
 }
 
 func Load(path string) (*Config, error) {
@@ -48,62 +70,74 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config failed: %w", err)
 	}
 
+	applyGlobalDefaults(&cfg)
+
+	for i := range cfg.Nodes {
+		applyNodeDefaults(&cfg.Nodes[i], &cfg)
+	}
+
+	return &cfg, nil
+}
+
+func applyGlobalDefaults(cfg *Config) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":2112"
 	}
 	if cfg.MetricsPath == "" {
 		cfg.MetricsPath = "/metrics"
 	}
-	if cfg.MaxWorkers <= 0 {
-		cfg.MaxWorkers = 10
-	}
-	if cfg.TickSeconds <= 0 {
-		cfg.TickSeconds = 1
-	}
 	if cfg.SingBoxPath == "" {
 		cfg.SingBoxPath = "/usr/local/bin/sing-box"
 	}
+
+	if cfg.Scheduler.MaxWorkers <= 0 {
+		cfg.Scheduler.MaxWorkers = 10
+	}
+	if cfg.Scheduler.ReloadEverySeconds <= 0 {
+		cfg.Scheduler.ReloadEverySeconds = 60
+	}
+	if cfg.Scheduler.FailThreshold <= 0 {
+		cfg.Scheduler.FailThreshold = 3
+	}
+	if cfg.Scheduler.RecoverThreshold <= 0 {
+		cfg.Scheduler.RecoverThreshold = 2
+	}
+
 	if cfg.DefaultProbe.IntervalSeconds <= 0 {
 		cfg.DefaultProbe.IntervalSeconds = 60
 	}
 	if cfg.DefaultProbe.TimeoutSeconds <= 0 {
 		cfg.DefaultProbe.TimeoutSeconds = 8
 	}
-	if cfg.DefaultProbe.ProbeURL == "" {
-		cfg.DefaultProbe.ProbeURL = "https://cp.cloudflare.com/generate_204"
+	if cfg.DefaultProbe.ProbeMode == "" {
+		cfg.DefaultProbe.ProbeMode = "standard"
 	}
 	if cfg.DefaultProbe.UTLSFingerprint == "" {
 		cfg.DefaultProbe.UTLSFingerprint = "chrome"
 	}
-	if cfg.Subscription.ReloadSeconds <= 0 {
-		cfg.Subscription.ReloadSeconds = 300
+	if len(cfg.DefaultProbe.ProbeTargets.Standard) == 0 {
+		cfg.DefaultProbe.ProbeTargets.Standard = []string{
+			"https://cp.cloudflare.com/generate_204",
+			"https://www.gstatic.com/generate_204",
+		}
 	}
-	if len(cfg.Subscription.IncludeSchemes) == 0 {
-		cfg.Subscription.IncludeSchemes = []string{"vless"}
+	if len(cfg.DefaultProbe.ProbeTargets.Business) == 0 {
+		cfg.DefaultProbe.ProbeTargets.Business = []string{}
 	}
 
-	for i := range cfg.Nodes {
-		applyDefaults(&cfg.Nodes[i], &cfg)
+	if cfg.Subscription.RefreshIntervalSeconds <= 0 {
+		cfg.Subscription.RefreshIntervalSeconds = 300
 	}
-
-	return &cfg, nil
 }
 
-func applyDefaults(n *model.NodeConfig, cfg *Config) {
+func applyNodeDefaults(n *model.NodeConfig, cfg *Config) {
 	if n.IntervalSeconds <= 0 {
 		n.IntervalSeconds = cfg.DefaultProbe.IntervalSeconds
 	}
 	if n.TimeoutSeconds <= 0 {
 		n.TimeoutSeconds = cfg.DefaultProbe.TimeoutSeconds
 	}
-	if n.ProbeURL == "" {
-		n.ProbeURL = cfg.DefaultProbe.ProbeURL
-	}
 	if n.UTLSFingerprint == "" {
 		n.UTLSFingerprint = cfg.DefaultProbe.UTLSFingerprint
 	}
-}
-
-func ApplyDefaults(n *model.NodeConfig, cfg *Config) {
-	applyDefaults(n, cfg)
 }

@@ -41,7 +41,13 @@
 
 ```bash
 go mod tidy
-go build -o node-agent ./cmd/agent
+
+#windows
+$env:CGO_ENABLED="0"
+$env:GOOS="linux"
+$env:GOARCH="amd64"
+
+go build -trimpath -ldflags="-s -w" -o node-agent ./cmd/agent
 ```
 
 ## 运行

@@ -11,7 +11,6 @@ type NodeConfig struct {
 	PublicKey       string `yaml:"public_key" json:"public_key"`
 	ShortID         string `yaml:"short_id" json:"short_id"`
 	UTLSFingerprint string `yaml:"utls_fingerprint" json:"utls_fingerprint"`
-	ProbeURL        string `yaml:"probe_url" json:"probe_url"`
 	IntervalSeconds int    `yaml:"interval_seconds" json:"interval_seconds"`
 	TimeoutSeconds  int    `yaml:"timeout_seconds" json:"timeout_seconds"`
 }

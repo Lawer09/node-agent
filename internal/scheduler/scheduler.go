@@ -23,7 +23,7 @@ type Scheduler struct {
 }
 
 func New(cfg *config.Config, src *source.Manager) *Scheduler {
-	maxWorkers := cfg.MaxWorkers
+	maxWorkers := cfg.Scheduler.MaxWorkers
 	if maxWorkers <= 0 {
 		maxWorkers = 10
 	}
@@ -31,9 +31,16 @@ func New(cfg *config.Config, src *source.Manager) *Scheduler {
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	ticker := time.NewTicker(time.Duration(s.cfg.TickSeconds) * time.Second)
+	interval := s.cfg.DefaultProbe.IntervalSeconds
+	if interval <= 0 {
+		interval = 60
+	}
+
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
+
 	s.dispatch(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -94,14 +101,16 @@ func (s *Scheduler) runOnce(ctx context.Context, node model.NodeConfig) {
 		log.Printf("[node=%s] get free port failed: %v", node.NodeID, err)
 		return
 	}
-
-	result := probe.Run(runCtx, node, s.cfg.SingBoxPath, socksPort)
+	targets := probe.ResolveTargets(s.cfg.DefaultProbe)
+	result := probe.Run(runCtx, node, s.cfg.SingBoxPath, socksPort, targets)
 	server, port := node.Server, strconv.Itoa(node.ServerPort)
 	metrics.ProbeDuration.WithLabelValues(node.NodeID, server, port, "spawn").Observe(result.SpawnLatency.Seconds())
 	metrics.ProbeDuration.WithLabelValues(node.NodeID, server, port, "request").Observe(result.ReqLatency.Seconds())
+
 	if result.HTTPCode > 0 {
-		metrics.HTTPStatus.WithLabelValues(node.NodeID, server, port).Set(float64(result.HTTPCode))
+		metrics.HTTPStatus.WithLabelValues(node.NodeID, server, port, result.HTTPClass).Set(float64(result.HTTPCode))
 	}
+
 	if result.Success {
 		metrics.ProbeUp.WithLabelValues(node.NodeID, server, port, result.Phase).Set(1)
 		metrics.ProbeTotal.WithLabelValues(node.NodeID, server, port, "success", result.Phase, "").Inc()

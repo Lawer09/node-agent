@@ -14,8 +14,8 @@ func classifyPhaseAndErr(err error, stderr string) (string, string) {
 		errLower = strings.ToLower(err.Error())
 	}
 
-	if errors.Is(err, context.DeadlineExceeded) || containsAny(errLower, "deadline exceeded") {
-		if containsAny(stderrLower, "tls", "handshake", "reality", "clienthello") {
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errLower, "deadline exceeded") {
+		if containsAny(stderrLower, "tls", "handshake", "reality") {
 			return "tls_clienthello", "tls_handshake_timeout"
 		}
 		return "proxy_request", "context_deadline_exceeded"
@@ -26,7 +26,12 @@ func classifyPhaseAndErr(err error, stderr string) (string, string) {
 		return "socks_dial", "dns_resolve_failed"
 	}
 
-	if containsAny(errLower, "connection refused", "network is unreachable", "connectex", "no route to host") {
+	if containsAny(errLower,
+		"connection refused",
+		"network is unreachable",
+		"no route to host",
+		"connectex",
+	) {
 		return "socks_dial", "tcp_connect_failed"
 	}
 
@@ -51,7 +56,8 @@ func classifyPhaseAndErr(err error, stderr string) (string, string) {
 		return "reality_verify", "tls_reality_handshake_failed"
 	}
 
-	if containsAny(stderrLower, "tls", "handshake", "clienthello", "certificate") || containsAny(errLower, "tls", "handshake", "clienthello", "certificate") {
+	if containsAny(stderrLower, "tls", "handshake", "clienthello", "certificate") ||
+		containsAny(errLower, "tls", "handshake", "clienthello", "certificate") {
 		return "tls_clienthello", "tls_clienthello_rejected"
 	}
 
@@ -62,11 +68,14 @@ func classifyPhaseAndErr(err error, stderr string) (string, string) {
 	return "proxy_request", "unknown_error"
 }
 
-func classifyListenErr(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) || containsAny(strings.ToLower(err.Error()), "deadline exceeded") {
+func classifyErr(stage string, err error, stderr string) string {
+	switch stage {
+	case "listen":
 		return "listen_timeout"
+	default:
+		_, errType := classifyPhaseAndErr(err, stderr)
+		return errType
 	}
-	return "listen_timeout"
 }
 
 func containsAny(s string, subs ...string) bool {

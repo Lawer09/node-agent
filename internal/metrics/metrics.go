@@ -24,8 +24,11 @@ var (
 	)
 
 	HTTPStatus = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{Name: "node_probe_http_status_code", Help: "HTTP status code from latest probe"},
-		[]string{"node_id", "server", "port"},
+		prometheus.GaugeOpts{
+			Name: "node_probe_http_status_code",
+			Help: "HTTP status code from latest probe",
+		},
+		[]string{"node_id", "server", "port", "probe_class"},
 	)
 
 	ActiveNodes = prometheus.NewGauge(
