@@ -34,6 +34,7 @@ type DefaultProbeConfig struct {
 	TimeoutSeconds  int          `yaml:"timeout_seconds"`
 	ProbeMode       string       `yaml:"probe_mode"`
 	ProbeTargets    ProbeTargets `yaml:"probe_targets"`
+	ProbeEngine     string       `yaml:"probe_engine"`
 	UTLSFingerprint string       `yaml:"utls_fingerprint"`
 }
 
@@ -117,6 +118,9 @@ func applyGlobalDefaults(cfg *Config) {
 	}
 	if cfg.DefaultProbe.UTLSFingerprint == "" {
 		cfg.DefaultProbe.UTLSFingerprint = "chrome"
+	}
+	if cfg.DefaultProbe.ProbeEngine == "" {
+		cfg.DefaultProbe.ProbeEngine = "curl"
 	}
 	if len(cfg.DefaultProbe.ProbeTargets.Standard) == 0 {
 		cfg.DefaultProbe.ProbeTargets.Standard = []string{

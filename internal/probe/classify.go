@@ -8,11 +8,42 @@ import (
 )
 
 func classifyPhaseAndErr(err error, stderr string) (phase string, errType string, reason string) {
-	stderrLower := strings.ToLower(stderr)
-	errLower := ""
-	if err != nil {
-		errLower = strings.ToLower(err.Error())
+	if err == nil {
+		return "http_response", "", "no error"
 	}
+
+	// 先识别结构化 HTTPProbeError
+	var httpErr *HTTPProbeError
+	if errors.As(err, &httpErr) {
+		switch httpErr.Engine {
+		case "curl":
+			switch httpErr.ExitCode {
+			case 35:
+				return "tls_clienthello", "curl_tls_handshake_error", "curl exit 35 ssl_connect/tls handshake failed"
+			case 28:
+				return "proxy_request", "curl_timeout", "curl exit 28 timeout"
+			case 7:
+				return "socks_dial", "curl_connect_failed", "curl exit 7 connect failed"
+			case 56:
+				return "proxy_request", "curl_connection_closed", "curl exit 56 recv/send failure or connection closed"
+			}
+			if httpErr.Stage == "tls_handshake" {
+				return "tls_clienthello", "curl_tls_handshake_error", "curl tls_handshake stage failed"
+			}
+			return "proxy_request", "curl_request_failed", "curl engine returned structured error"
+		case "golang":
+			if httpErr.Stage == "body_read" {
+				return "proxy_request", "body_read_failed", "golang engine failed while reading response body"
+			}
+			if httpErr.Stage == "do" && strings.Contains(strings.ToLower(httpErr.Detail), "eof") {
+				return "tls_clienthello", "tls_handshake_eof", "golang client.Do returned EOF during/after tls handshake"
+			}
+			return "proxy_request", "golang_request_failed", "golang engine returned structured error"
+		}
+	}
+
+	stderrLower := strings.ToLower(stderr)
+	errLower := strings.ToLower(err.Error())
 
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errLower, "deadline exceeded") {
 		if containsAny(stderrLower, "tls", "handshake", "reality") {
@@ -26,17 +57,16 @@ func classifyPhaseAndErr(err error, stderr string) (phase string, errType string
 		return "socks_dial", "dns_resolve_failed", "dns resolution failed"
 	}
 
-	if containsAny(errLower,
-		"connection refused",
-		"network is unreachable",
-		"no route to host",
-		"connectex",
-	) {
+	if containsAny(errLower, "connection refused", "network is unreachable", "no route to host", "connectex") {
 		return "socks_dial", "tcp_connect_failed", "tcp connect failed"
 	}
 
 	if containsAny(errLower, "socks", "proxyconnect", "proxy connection failed") {
 		return "socks_dial", "socks_connect_failed", "socks dial/connect failed"
+	}
+
+	if containsAny(errLower, "ssl_error_syscall", "ssl_connect") {
+		return "tls_clienthello", "tls_syscall_error", "openssl ssl_connect/ssl_error_syscall matched"
 	}
 
 	if containsAny(errLower, "eof") {

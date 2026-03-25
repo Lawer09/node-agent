@@ -22,6 +22,7 @@ type Result struct {
 	HTTPClass      string
 	TargetURL      string
 	ClassifyReason string
+	HTTPProto      string
 
 	SpawnLatency time.Duration
 	ReqLatency   time.Duration
@@ -32,7 +33,7 @@ type Result struct {
 	Detail string
 }
 
-func Run(ctx context.Context, node model.NodeConfig, singBoxPath string, socksPort int, targets []ProbeTarget) Result {
+func Run(ctx context.Context, node model.NodeConfig, singBoxPath string, socksPort int, targets []ProbeTarget, engine string, probeMode string, timeoutSeconds int) Result {
 	overallStart := time.Now()
 
 	cfgPath, err := writeTempConfig(node, socksPort)
@@ -111,24 +112,27 @@ func Run(ctx context.Context, node model.NodeConfig, singBoxPath string, socksPo
 
 	if len(targets) == 0 {
 		targets = []ProbeTarget{
-			{Class: "standard", URL: "https://cp.cloudflare.com/generate_204"},
+			{Class: "standard", URL: "https://www.google.com/generate_204"},
 		}
 	}
 
+	classOK := map[string]bool{}
+	var lastFail Result
+
 	for _, target := range targets {
 		reqStart := time.Now()
-		httpCode, err := doHTTPViaSocks(ctx, socksPort, target.URL)
+		httpCode, proto, err := doHTTPViaSocks(ctx, socksPort, target.URL, engine, timeoutSeconds)
 		reqLatency := time.Since(reqStart)
 
 		if err != nil {
-			<-doneCopy
-			stderrText := stderrBuf.String()
-			phase, errType, reason := classifyPhaseAndErr(err, stderrText)
-			return Result{
+			phase, errType, reason := classifyPhaseAndErr(err, stderrBuf.String())
+
+			lastFail = Result{
 				Success:        false,
 				Phase:          phase,
 				ErrorType:      errType,
 				HTTPCode:       0,
+				HTTPProto:      proto,
 				HTTPClass:      target.Class,
 				TargetURL:      target.URL,
 				ClassifyReason: reason,
@@ -136,46 +140,82 @@ func Run(ctx context.Context, node model.NodeConfig, singBoxPath string, socksPo
 				ReqLatency:     reqLatency,
 				TotalLatency:   time.Since(overallStart),
 				Err:            err,
-				Stderr:         stderrText,
+				Stderr:         stderrBuf.String(),
 				Detail:         err.Error(),
 			}
+			continue
 		}
 
-		if httpCode < 200 || httpCode >= 400 {
-			<-doneCopy
-			stderrText := stderrBuf.String()
-			return Result{
+		if httpCode >= 200 && httpCode < 400 {
+			classOK[target.Class] = true
+			// 记录最后一个成功 target
+			lastFail = Result{
+				Success:        true,
+				Phase:          "http_response",
+				ErrorType:      "",
+				HTTPCode:       httpCode,
+				HTTPProto:      proto,
+				HTTPClass:      target.Class,
+				TargetURL:      target.URL,
+				ClassifyReason: "target probe succeeded",
+				SpawnLatency:   spawnLatency,
+				ReqLatency:     reqLatency,
+				TotalLatency:   time.Since(overallStart),
+				Stderr:         stderrBuf.String(),
+			}
+		} else {
+			lastFail = Result{
 				Success:        false,
 				Phase:          "http_response",
 				ErrorType:      "http_non_2xx",
 				HTTPCode:       httpCode,
+				HTTPProto:      proto,
 				HTTPClass:      target.Class,
 				TargetURL:      target.URL,
-				ClassifyReason: "http response status is not in 2xx/3xx success range expected by probe",
+				ClassifyReason: "http response status is not in success range",
 				SpawnLatency:   spawnLatency,
 				ReqLatency:     reqLatency,
 				TotalLatency:   time.Since(overallStart),
 				Err:            fmt.Errorf("unexpected status code: %d", httpCode),
-				Stderr:         stderrText,
+				Stderr:         stderrBuf.String(),
 				Detail:         fmt.Sprintf("unexpected status code: %d", httpCode),
 			}
 		}
 	}
 
-	lastTarget := targets[len(targets)-1]
-	return Result{
-		Success:        true,
-		Phase:          "http_response",
-		ErrorType:      "",
-		HTTPCode:       204,
-		HTTPClass:      lastTarget.Class,
-		TargetURL:      lastTarget.URL,
-		ClassifyReason: "probe request finished successfully",
-		SpawnLatency:   spawnLatency,
-		ReqLatency:     0,
-		TotalLatency:   time.Since(overallStart),
-		Stderr:         stderrBuf.String(),
+	<-doneCopy
+	lastFail.Stderr = stderrBuf.String()
+
+	// 按模式判定
+	switch probeMode {
+	case "business":
+		if classOK["business"] {
+			return successResult(lastFail, spawnLatency, overallStart)
+		}
+		lastFail.ClassifyReason = `business class has no successful targets`
+		return lastFail
+	case "both":
+		if classOK["standard"] && classOK["business"] {
+			return successResult(lastFail, spawnLatency, overallStart)
+		}
+		lastFail.ClassifyReason = fmt.Sprintf("probe_mode=both requires standard=%v business=%v", classOK["standard"], classOK["business"])
+		return lastFail
+	default: // standard
+		if classOK["standard"] {
+			return successResult(lastFail, spawnLatency, overallStart)
+		}
+		lastFail.ClassifyReason = `standard class has no successful targets`
+		return lastFail
 	}
+}
+
+func successResult(last Result, spawnLatency time.Duration, overallStart time.Time) Result {
+	last.Success = true
+	last.Phase = "http_response"
+	last.ErrorType = ""
+	last.SpawnLatency = spawnLatency
+	last.TotalLatency = time.Since(overallStart)
+	return last
 }
 
 func waitPortReady(ctx context.Context, host string, port int, timeout time.Duration) error {

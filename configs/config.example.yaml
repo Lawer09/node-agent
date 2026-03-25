@@ -12,11 +12,14 @@ default_probe:
   interval_seconds: 60
   timeout_seconds: 8
   probe_mode: "standard"
+  probe_engine: "curl"   # curl / golang
   probe_targets:
     standard:
+      - "https://www.google.com/generate_204"
       - "https://cp.cloudflare.com/generate_204"
       - "https://www.gstatic.com/generate_204"
-    business: []
+    business:
+      - "https://www.google.com"
   utls_fingerprint: "chrome"
 
 subscription:

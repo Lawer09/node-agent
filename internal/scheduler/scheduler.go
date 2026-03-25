@@ -108,7 +108,17 @@ func (s *Scheduler) runOnce(ctx context.Context, node model.NodeConfig) {
 	}
 
 	targets := probe.ResolveTargets(s.cfg.DefaultProbe)
-	result := probe.Run(runCtx, node, s.cfg.SingBoxPath, socksPort, targets)
+	
+	result := probe.Run(
+		runCtx,
+		node,
+		s.cfg.SingBoxPath,
+		socksPort,
+		targets,
+		s.cfg.DefaultProbe.ProbeEngine,
+		s.cfg.DefaultProbe.ProbeMode,
+		timeout,
+	)
 
 	server := node.Server
 	port := strconv.Itoa(node.ServerPort)
