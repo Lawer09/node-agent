@@ -1,11 +1,14 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"singbox-node-agent/internal/model"
 
 	"gopkg.in/yaml.v3"
-	"singbox-node-agent/internal/model"
 )
 
 type Config struct {
@@ -140,4 +143,71 @@ func applyNodeDefaults(n *model.NodeConfig, cfg *Config) {
 	if n.UTLSFingerprint == "" {
 		n.UTLSFingerprint = cfg.DefaultProbe.UTLSFingerprint
 	}
+}
+
+func WriteDebugConfig(node model.NodeConfig, socksPort int) (string, error) {
+	return writeSingboxConfig(node, socksPort, "node-agent-debug-*.json")
+}
+
+func writeTempConfig(node model.NodeConfig, socksPort int) (string, error) {
+	return writeSingboxConfig(node, socksPort, "node-agent-probe-*.json")
+}
+
+func writeSingboxConfig(node model.NodeConfig, socksPort int, pattern string) (string, error) {
+	cfg := map[string]any{
+		"log": map[string]any{
+			"level": "info",
+		},
+		"inbounds": []map[string]any{
+			{
+				"type":        "socks",
+				"tag":         "socks-in",
+				"listen":      "127.0.0.1",
+				"listen_port": socksPort,
+			},
+		},
+		"outbounds": []map[string]any{
+			{
+				"type":        "vless",
+				"tag":         "proxy",
+				"server":      node.Server,
+				"server_port": node.ServerPort,
+				"uuid":        node.UUID,
+				"flow":        "xtls-rprx-vision",
+				"tls": map[string]any{
+					"enabled":     true,
+					"server_name": node.ServerName,
+					"utls": map[string]any{
+						"enabled":     true,
+						"fingerprint": node.UTLSFingerprint,
+					},
+					"reality": map[string]any{
+						"enabled":    true,
+						"public_key": node.PublicKey,
+						"short_id":   node.ShortID,
+					},
+				},
+			},
+		},
+		"route": map[string]any{
+			"final": "proxy",
+		},
+	}
+
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal sing-box config failed: %w", err)
+	}
+
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", fmt.Errorf("create temp config failed: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(b); err != nil {
+		return "", fmt.Errorf("write temp config failed: %w", err)
+	}
+
+	return filepath.Clean(f.Name()), nil
 }

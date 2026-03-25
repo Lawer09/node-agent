@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"log"
-	"sort"
 	"strconv"
 	"time"
 
@@ -17,9 +16,9 @@ import (
 
 type Scheduler struct {
 	cfg     *config.Config
-	src     *source.Manager
+	source  *source.Manager
 	sem     chan struct{}
-	nextRun map[string]time.Time
+	started bool
 }
 
 func New(cfg *config.Config, src *source.Manager) *Scheduler {
@@ -27,16 +26,15 @@ func New(cfg *config.Config, src *source.Manager) *Scheduler {
 	if maxWorkers <= 0 {
 		maxWorkers = 10
 	}
-	return &Scheduler{cfg: cfg, src: src, sem: make(chan struct{}, maxWorkers), nextRun: map[string]time.Time{}}
+	return &Scheduler{
+		cfg:    cfg,
+		source: src,
+		sem:    make(chan struct{}, maxWorkers),
+	}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	interval := s.cfg.DefaultProbe.IntervalSeconds
-	if interval <= 0 {
-		interval = 60
-	}
-
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	s.dispatch(ctx)
@@ -52,27 +50,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 func (s *Scheduler) dispatch(ctx context.Context) {
-	now := time.Now()
-	nodes := s.src.ListNodes()
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeID < nodes[j].NodeID })
-	active := map[string]struct{}{}
+	nodes := s.source.ListNodes()
 	for _, node := range nodes {
-		active[node.Key()] = struct{}{}
-		next, ok := s.nextRun[node.Key()]
-		if ok && now.Before(next) {
-			continue
-		}
 		s.tryRunOnce(ctx, node)
-		interval := node.IntervalSeconds
-		if interval <= 0 {
-			interval = s.cfg.DefaultProbe.IntervalSeconds
-		}
-		s.nextRun[node.Key()] = now.Add(time.Duration(interval) * time.Second)
-	}
-	for key := range s.nextRun {
-		if _, ok := active[key]; !ok {
-			delete(s.nextRun, key)
-		}
 	}
 }
 
@@ -84,26 +64,65 @@ func (s *Scheduler) tryRunOnce(ctx context.Context, node model.NodeConfig) {
 			s.runOnce(ctx, node)
 		}()
 	default:
-		log.Printf("[node=%s] skipped: worker pool full", node.NodeID)
+		log.Printf(
+			"[probe][status=skipped] node=%s source=%s name=%q server=%s port=%d reason=%q max_workers=%d",
+			node.NodeID,
+			node.Source,
+			node.Name,
+			node.Server,
+			node.ServerPort,
+			"worker_pool_full",
+			cap(s.sem),
+		)
 	}
 }
 
 func (s *Scheduler) runOnce(ctx context.Context, node model.NodeConfig) {
+
 	timeout := node.TimeoutSeconds
 	if timeout <= 0 {
 		timeout = s.cfg.DefaultProbe.TimeoutSeconds
 	}
+	if timeout <= 0 {
+		timeout = 8
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	socksPort, err := util.GetFreePort()
 	if err != nil {
-		log.Printf("[node=%s] get free port failed: %v", node.NodeID, err)
+		log.Printf(
+			"[probe][status=failed] node=%s source=%s name=%q server=%s port=%d phase=%s error_type=%s classify_reason=%q detail=%q",
+			node.NodeID,
+			node.Source,
+			node.Name,
+			node.Server,
+			node.ServerPort,
+			"spawn",
+			"local_port_allocate_failed",
+			"failed to allocate local socks port",
+			err.Error(),
+		)
 		return
 	}
+
 	targets := probe.ResolveTargets(s.cfg.DefaultProbe)
 	result := probe.Run(runCtx, node, s.cfg.SingBoxPath, socksPort, targets)
-	server, port := node.Server, strconv.Itoa(node.ServerPort)
+
+	server := node.Server
+	port := strconv.Itoa(node.ServerPort)
+
+	metrics.NodeInfo.WithLabelValues(
+		node.NodeID,
+		node.Name,
+		node.Source,
+		server,
+		port,
+		node.ServerName,
+		node.UTLSFingerprint,
+	).Set(1)
+
 	metrics.ProbeDuration.WithLabelValues(node.NodeID, server, port, "spawn").Observe(result.SpawnLatency.Seconds())
 	metrics.ProbeDuration.WithLabelValues(node.NodeID, server, port, "request").Observe(result.ReqLatency.Seconds())
 
@@ -112,18 +131,95 @@ func (s *Scheduler) runOnce(ctx context.Context, node model.NodeConfig) {
 	}
 
 	if result.Success {
-		metrics.ProbeUp.WithLabelValues(node.NodeID, server, port, result.Phase).Set(1)
-		metrics.ProbeTotal.WithLabelValues(node.NodeID, server, port, "success", result.Phase, "").Inc()
+		metrics.ProbeUp.WithLabelValues(node.NodeID, server, port, "request").Set(1)
+		metrics.ProbeTotal.WithLabelValues(node.NodeID, server, port, "success", "", "").Inc()
 		metrics.LastSuccess.WithLabelValues(node.NodeID, server, port).Set(float64(time.Now().Unix()))
-		log.Printf("[node=%s][source=%s][name=%s] probe success phase=%s http=%d", node.NodeID, node.Source, node.Name, result.Phase, result.HTTPCode)
+
+		log.Printf(
+			"[probe][status=success] node=%s source=%s name=%q server=%s port=%d server_name=%q fp=%q sid=%q pbk_tail=%q timeout=%ds socks_port=%d phase=%s probe_class=%s probe_url=%q http=%d spawn_ms=%d request_ms=%d total_ms=%d",
+			node.NodeID,
+			node.Source,
+			node.Name,
+			node.Server,
+			node.ServerPort,
+			node.ServerName,
+			node.UTLSFingerprint,
+			maskShortID(node.ShortID),
+			tailString(node.PublicKey, 8),
+			timeout,
+			socksPort,
+			result.Phase,
+			result.HTTPClass,
+			result.TargetURL,
+			result.HTTPCode,
+			result.SpawnLatency.Milliseconds(),
+			result.ReqLatency.Milliseconds(),
+			result.TotalLatency.Milliseconds(),
+		)
 		return
 	}
 
 	metrics.ProbeUp.WithLabelValues(node.NodeID, server, port, result.Phase).Set(0)
 	metrics.ProbeTotal.WithLabelValues(node.NodeID, server, port, "failed", result.Phase, result.ErrorType).Inc()
-	log.Printf("[node=%s][source=%s][name=%s] probe failed phase=%s error_type=%s detail=%s err=%v stderr=%q", node.NodeID, node.Source, node.Name, result.Phase, result.ErrorType, result.Detail, result.Err, result.Stderr)
+
+	rawErr := ""
+	if result.Err != nil {
+		rawErr = result.Err.Error()
+	}
+
+	log.Printf(
+		"[probe][status=failed] node=%s source=%s name=%q server=%s port=%d server_name=%q fp=%q sid=%q pbk_tail=%q timeout=%ds socks_port=%d phase=%s error_type=%s classify_reason=%q probe_class=%s probe_url=%q spawn_ms=%d request_ms=%d total_ms=%d detail=%q raw_error=%q stderr_excerpt=%q",
+		node.NodeID,
+		node.Source,
+		node.Name,
+		node.Server,
+		node.ServerPort,
+		node.ServerName,
+		node.UTLSFingerprint,
+		maskShortID(node.ShortID),
+		tailString(node.PublicKey, 8),
+		timeout,
+		socksPort,
+		result.Phase,
+		result.ErrorType,
+		result.ClassifyReason,
+		result.HTTPClass,
+		result.TargetURL,
+		result.SpawnLatency.Milliseconds(),
+		result.ReqLatency.Milliseconds(),
+		result.TotalLatency.Milliseconds(),
+		result.Detail,
+		rawErr,
+		excerpt(result.Stderr, 300),
+	)
 }
 
-func (s *Scheduler) Summary() string {
-	return "subscription-aware scheduler with handshake classification started"
+func maskShortID(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 4 {
+		return s
+	}
+	return s[:2] + "***" + s[len(s)-2:]
+}
+
+func tailString(s string, n int) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}
+
+func excerpt(s string, n int) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

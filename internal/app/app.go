@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,51 +22,57 @@ import (
 func Run() error {
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
-		configPath = "configs/config.yaml"
+		if _, err := os.Stat("/opt/singbox-node-agent/config.yaml"); err == nil {
+			configPath = "/opt/singbox-node-agent/config.yaml"
+		} else {
+			configPath = "configs/config.yaml"
+		}
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("read config failed: %w", err)
 	}
+
 	metrics.MustRegister()
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.MetricsPath, promhttp.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
 
-	server := &http.Server{Addr: cfg.ListenAddr, Handler: mux}
+	server := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: mux,
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	srcMgr := source.NewManager(cfg)
+	go srcMgr.Start(ctx)
+
+	sch := scheduler.New(cfg, srcMgr)
+	go sch.Start(ctx)
+
 	go func() {
 		log.Printf("metrics server listening on %s", cfg.ListenAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("metrics server error: %v", err)
 			cancel()
 		}
 	}()
 
-	src := source.NewManager(cfg)
-	go src.Start(ctx)
-
-	subNodes, err := source.LoadFromURL(cfg.Subscription, cfg.DefaultProbe)
-	if err != nil {
-		log.Printf("load subscription failed: %v", err)
-	} else {
-		cfg.Nodes = append(cfg.Nodes, subNodes...)
-	}
-
-	s := scheduler.New(cfg, src)
-	log.Printf("scheduler started: %s", s.Summary())
-	go s.Start(ctx)
-
 	<-ctx.Done()
+
 	log.Printf("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
+
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("http shutdown failed: %w", err)
 	}
+
 	return nil
 }
